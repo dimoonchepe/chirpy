@@ -29,6 +29,14 @@ type User struct {
 	Email     string    `json:"email"`
 }
 
+type ChirpResponse struct {
+	ID        uuid.UUID `json:"id"`
+	CreatedAt time.Time `json:"created_at"`
+	UpdatedAt time.Time `json:"updated_at"`
+	Body      string    `json:"body"`
+	UserID    uuid.UUID `json:"user_id"`
+}
+
 func (cfg *apiConfig) middlewareMetricsInc(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
 		cfg.fileserverHits.Add(1)
@@ -115,6 +123,95 @@ func (cfg *apiConfig) handlerAddUser(w http.ResponseWriter, r *http.Request) {
 	respondWithJSON(w, http.StatusCreated, resUser)
 }
 
+func (cfg *apiConfig) handlerAddChirp(w http.ResponseWriter, r *http.Request) {
+	type chirp struct {
+		Body   string    `json:"body"`
+		UserID uuid.UUID `json:"user_id"`
+	}
+	decoder := json.NewDecoder(r.Body)
+	w.Header().Set("Content-Type", "application/json")
+	var c chirp
+	err := decoder.Decode(&c)
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chirp")
+		return
+	}
+	if len(c.Body) < 1 {
+		respondWithError(w, http.StatusBadRequest, "Content is required")
+		return
+	}
+	if len(c.Body) > 140 {
+		respondWithError(w, http.StatusBadRequest, "Chirp is too long")
+		return
+	}
+	badWords := []string{"kerfuffle", "sharbert", "fornax"}
+	words := strings.Fields(c.Body)
+	for i, word := range words {
+		// if word.ToLower in badwrds replace it with "****"
+		if slices.Contains(badWords, strings.ToLower(word)) {
+			words[i] = "****"
+		}
+	}
+	body := strings.Join(words, " ")
+	dbChirp, err := cfg.queries.CreateChirp(r.Context(), database.CreateChirpParams{Body: body, UserID: c.UserID})
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to create chirp")
+		return
+	}
+	resChirp := ChirpResponse{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+	respondWithJSON(w, http.StatusCreated, resChirp)
+}
+
+func (cfg *apiConfig) handlerGetAllChirps(w http.ResponseWriter, r *http.Request) {
+	dbChirps, err := cfg.queries.GetAllChirps(r.Context())
+	if err != nil {
+		respondWithError(w, http.StatusInternalServerError, "Failed to get chirps")
+		return
+	}
+	resChirps := make([]ChirpResponse, len(dbChirps))
+	for i, dbChirp := range dbChirps {
+		resChirps[i] = ChirpResponse{
+			ID:        dbChirp.ID,
+			CreatedAt: dbChirp.CreatedAt,
+			UpdatedAt: dbChirp.UpdatedAt,
+			Body:      dbChirp.Body,
+			UserID:    dbChirp.UserID,
+		}
+	}
+	respondWithJSON(w, http.StatusOK, resChirps)
+}
+
+func (cfg *apiConfig) handlerGetChirp(w http.ResponseWriter, r *http.Request) {
+	id, err := uuid.Parse(r.PathValue("chirpID"))
+	if err != nil {
+		respondWithError(w, http.StatusBadRequest, "Invalid chirp ID")
+		return
+	}
+	dbChirp, err := cfg.queries.GetChirp(r.Context(), id)
+	if err != nil {
+		if err == sql.ErrNoRows {
+			respondWithError(w, http.StatusNotFound, "Chirp not found")
+		} else {
+			respondWithError(w, http.StatusInternalServerError, "Failed to get chirp")
+		}
+		return
+	}
+	resChirp := ChirpResponse{
+		ID:        dbChirp.ID,
+		CreatedAt: dbChirp.CreatedAt,
+		UpdatedAt: dbChirp.UpdatedAt,
+		Body:      dbChirp.Body,
+		UserID:    dbChirp.UserID,
+	}
+	respondWithJSON(w, http.StatusOK, resChirp)
+}
+
 func respondWithJSON(w http.ResponseWriter, status int, data any) {
 	w.Header().Set("Content-Type", "application/json")
 	w.WriteHeader(status)
@@ -157,6 +254,9 @@ func main() {
 	mux.HandleFunc("POST /admin/reset", apiCfg.reset)
 	mux.HandleFunc("POST /api/validate_chirp", handlerValidateChirp)
 	mux.HandleFunc("POST /api/users", apiCfg.handlerAddUser)
+	mux.HandleFunc("POST /api/chirps", apiCfg.handlerAddChirp)
+	mux.HandleFunc("GET /api/chirps", apiCfg.handlerGetAllChirps)
+	mux.HandleFunc("GET /api/chirps/{chirpID}", apiCfg.handlerGetChirp)
 
 	server := &http.Server{
 		Addr:    ":8080",
