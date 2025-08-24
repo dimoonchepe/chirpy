@@ -12,29 +12,12 @@ import (
 	"github.com/google/uuid"
 )
 
-const createRefreshToken = `-- name: CreateRefreshToken :exec
-INSERT INTO refresh_tokens (token, user_id, expires_at)
-VALUES (
-    $1, $2, now() + interval '60 days'
-)
-`
-
-type CreateRefreshTokenParams struct {
-	Token  string
-	UserID uuid.UUID
-}
-
-func (q *Queries) CreateRefreshToken(ctx context.Context, arg CreateRefreshTokenParams) error {
-	_, err := q.db.ExecContext(ctx, createRefreshToken, arg.Token, arg.UserID)
-	return err
-}
-
 const createUser = `-- name: CreateUser :one
 INSERT INTO users (id, created_at, updated_at, email, hashed_password)
 VALUES (
     gen_random_uuid (), now(), now(), $1, $2
 )
-RETURNING id, created_at, updated_at, email
+RETURNING id, created_at, updated_at, is_chirpy_red, email
 `
 
 type CreateUserParams struct {
@@ -43,10 +26,11 @@ type CreateUserParams struct {
 }
 
 type CreateUserRow struct {
-	ID        uuid.UUID
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Email     string
+	ID          uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	IsChirpyRed bool
+	Email       string
 }
 
 func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateUserRow, error) {
@@ -56,6 +40,7 @@ func (q *Queries) CreateUser(ctx context.Context, arg CreateUserParams) (CreateU
 		&i.ID,
 		&i.CreatedAt,
 		&i.UpdatedAt,
+		&i.IsChirpyRed,
 		&i.Email,
 	)
 	return i, err
@@ -71,7 +56,7 @@ func (q *Queries) DeleteAllUsers(ctx context.Context) error {
 }
 
 const getUserByEmail = `-- name: GetUserByEmail :one
-SELECT id, created_at, updated_at, email, hashed_password FROM users WHERE email = $1
+SELECT id, created_at, updated_at, email, hashed_password, is_chirpy_red FROM users WHERE email = $1
 `
 
 func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error) {
@@ -83,32 +68,34 @@ func (q *Queries) GetUserByEmail(ctx context.Context, email string) (User, error
 		&i.UpdatedAt,
 		&i.Email,
 		&i.HashedPassword,
+		&i.IsChirpyRed,
 	)
 	return i, err
 }
 
-const getUserIdFromRefreshToken = `-- name: GetUserIdFromRefreshToken :one
-SELECT user_id FROM refresh_tokens
-WHERE token = $1 AND expires_at > now() AND revoked_at IS NULL
+const getUserByID = `-- name: GetUserByID :one
+SELECT id, created_at, updated_at, email, is_chirpy_red FROM users WHERE id = $1
 `
 
-func (q *Queries) GetUserIdFromRefreshToken(ctx context.Context, token string) (uuid.UUID, error) {
-	row := q.db.QueryRowContext(ctx, getUserIdFromRefreshToken, token)
-	var user_id uuid.UUID
-	err := row.Scan(&user_id)
-	return user_id, err
+type GetUserByIDRow struct {
+	ID          uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Email       string
+	IsChirpyRed bool
 }
 
-const revokeRefreshToken = `-- name: RevokeRefreshToken :exec
-UPDATE refresh_tokens SET
-revoked_at = now(),
-updated_at = now()
-WHERE token = $1
-`
-
-func (q *Queries) RevokeRefreshToken(ctx context.Context, token string) error {
-	_, err := q.db.ExecContext(ctx, revokeRefreshToken, token)
-	return err
+func (q *Queries) GetUserByID(ctx context.Context, id uuid.UUID) (GetUserByIDRow, error) {
+	row := q.db.QueryRowContext(ctx, getUserByID, id)
+	var i GetUserByIDRow
+	err := row.Scan(
+		&i.ID,
+		&i.CreatedAt,
+		&i.UpdatedAt,
+		&i.Email,
+		&i.IsChirpyRed,
+	)
+	return i, err
 }
 
 const updateUser = `-- name: UpdateUser :one
@@ -117,7 +104,7 @@ email = $2,
 hashed_password = $3,
 updated_at = now()
 WHERE id = $1
-RETURNING id, created_at, updated_at, email
+RETURNING id, created_at, updated_at, email, is_chirpy_red
 `
 
 type UpdateUserParams struct {
@@ -127,10 +114,11 @@ type UpdateUserParams struct {
 }
 
 type UpdateUserRow struct {
-	ID        uuid.UUID
-	CreatedAt time.Time
-	UpdatedAt time.Time
-	Email     string
+	ID          uuid.UUID
+	CreatedAt   time.Time
+	UpdatedAt   time.Time
+	Email       string
+	IsChirpyRed bool
 }
 
 func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (UpdateUserRow, error) {
@@ -141,6 +129,16 @@ func (q *Queries) UpdateUser(ctx context.Context, arg UpdateUserParams) (UpdateU
 		&i.CreatedAt,
 		&i.UpdatedAt,
 		&i.Email,
+		&i.IsChirpyRed,
 	)
 	return i, err
+}
+
+const upgradeUserToRed = `-- name: UpgradeUserToRed :exec
+UPDATE users SET is_chirpy_red = TRUE, updated_at = now() WHERE id = $1
+`
+
+func (q *Queries) UpgradeUserToRed(ctx context.Context, id uuid.UUID) error {
+	_, err := q.db.ExecContext(ctx, upgradeUserToRed, id)
+	return err
 }
